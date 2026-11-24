@@ -1,0 +1,164 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// Probability logic © Zeiierman | Combined with ORB + VWAP + EMA 9 Signals
+
+//@version=5
+indicator("Amith - 15 min + VWAP + EMA 9 + Breakout Probability", overlay=true, max_bars_back=5000)
+
+// --- Signal Inputs ---
+useOrb15m        = input.bool(true, "Check 1st 15m Candle", group="Signal Settings")
+emaLength        = input.int(9, "EMA Length", minval=1, group="Signal Settings")
+signalOncePerDay = input.bool(false, "Only First Buy & First Sell Per Day", group="Signal Settings")
+
+// --- Probability Inputs ---
+showProb = input.bool(true, "Enable Breakout Probability", group="Probability Settings")
+perc     = input.float(1.0, "Percentage Step", step=0.1, minval=0, group="Probability Settings")
+nbr      = input.int(5, "Number of Lines", maxval=5, minval=1, group="Probability Settings")
+upCol    = input.color(color.new(color.green, 0), "", inline="col", group="Probability Settings")
+dnCol    = input.color(color.new(color.red, 0), "", inline="col", group="Probability Settings")
+fill     = input.bool(true, "BG Color", inline="col", group="Probability Settings")
+hideZero = input.bool(true, "Hide 0.00% Levels", group="Probability Settings")
+
+// --- 1st 15-Min Candle, VWAP & EMA 9 ---
+isNewDay = ta.change(time("D")) != 0
+
+var float orbHigh = na
+var float orbLow  = na
+
+[orb15High, orb15Low, orb15Time] = request.security(syminfo.tickerid, "15", [high, low, time], lookahead=barmerge.lookahead_on)
+
+if isNewDay
+    orbHigh := na
+    orbLow  := na
+
+if na(orbHigh) and na(orbLow)
+    orbHigh := orb15High
+    orbLow  := orb15Low
+
+if dayofmonth(orb15Time) == dayofmonth(time) and (na(orbHigh) or isNewDay)
+    orbHigh := orb15High
+    orbLow  := orb15Low
+
+vwapVal = ta.vwap(hlc3)
+ema9Val = ta.ema(close, emaLength)
+
+// --- Buy & Sell Signals ---
+var bool buyFiredToday  = false
+var bool sellFiredToday = false
+
+if isNewDay
+    buyFiredToday  := false
+    sellFiredToday := false
+
+orbBuyPass  = not useOrb15m or (not na(orbHigh) and (high > orbHigh or close > orbHigh))
+orbSellPass = not useOrb15m or (not na(orbLow)  and (low < orbLow  or close < orbLow))
+
+vwapEmaBuyPass  = (close > vwapVal) and (close > ema9Val)
+vwapEmaSellPass = (close < vwapVal) and (close < ema9Val)
+
+rawBuy  = orbBuyPass and vwapEmaBuyPass
+rawSell = orbSellPass and vwapEmaSellPass
+
+buySignal  = signalOncePerDay ? (rawBuy and not buyFiredToday) : rawBuy
+sellSignal = signalOncePerDay ? (rawSell and not sellFiredToday) : rawSell
+
+if buySignal
+    buyFiredToday := true
+if sellSignal
+    sellFiredToday := true
+
+// --- Breakout Probability Calculation ---
+b    = bar_index
+step = close * (perc / 100)
+
+var total  = matrix.new<int>(6, 4, 0)
+var vals   = matrix.new<float>(5, 4, 0.0)
+var lines  = matrix.new<line>(1, 10, line(na))
+var labels = matrix.new<label>(1, 10, label(na))
+
+greenCandle = close[1] > open[1]
+redCandle   = close[1] < open[1]
+
+if greenCandle
+    matrix.set(total, 5, 0, matrix.get(total, 5, 0) + 1)
+if redCandle
+    matrix.set(total, 5, 1, matrix.get(total, 5, 1) + 1)
+
+Score(float x, int i) =>
+    ghh    = matrix.get(total, i, 0)
+    gll    = matrix.get(total, i, 1)
+    rhh    = matrix.get(total, i, 2)
+    rll    = matrix.get(total, i, 3)
+    gtotal = matrix.get(total, 5, 0)
+    rtotal = matrix.get(total, 5, 1)
+    hh     = high >= high[1] + x
+    ll     = low  <= low[1]  - x
+    if greenCandle and hh
+        matrix.set(total, i, 0, ghh + 1)
+        matrix.set(vals, i, 0, math.round(((ghh + 1) / gtotal) * 100, 2))
+    if greenCandle and ll
+        matrix.set(total, i, 1, gll + 1)
+        matrix.set(vals, i, 1, math.round(((gll + 1) / gtotal) * 100, 2))
+    if redCandle and hh
+        matrix.set(total, i, 2, rhh + 1)
+        matrix.set(vals, i, 2, math.round(((rhh + 1) / rtotal) * 100, 2))
+    if redCandle and ll
+        matrix.set(total, i, 3, rll + 1)
+        matrix.set(vals, i, 3, math.round(((rll + 1) / rtotal) * 100, 2))
+
+Score(0, 0)
+Score(step, 1)
+Score(step * 2, 2)
+Score(step * 3, 3)
+Score(step * 4, 4)
+
+CreateLine(float p, int i, color col) =>
+    line.delete(matrix.get(lines, 0, i))
+    matrix.set(lines, 0, i, line.new(b[1], p, b, p, color=col, width=2))
+
+CreateLabel(float p, int i, color col, int r, int v) =>
+    label.delete(matrix.get(labels, 0, i))
+    matrix.set(labels, 0, i, label.new(b + 1, p, text=str.tostring(matrix.get(vals, r, v), format.percent), style=label.style_label_left, color=color.new(color.black, 100), textcolor=col))
+
+var filler = linefill(na)
+
+if showProb
+    for i = 0 to nbr - 1
+        condVal = greenCandle ? math.min(matrix.get(vals, i, 0), matrix.get(vals, i, 1)) : math.min(matrix.get(vals, i, 2), matrix.get(vals, i, 3))
+        if not hideZero or condVal > 0
+            hi = high[1] + (step * i)
+            lo = low[1]  - (step * i)
+            CreateLine(hi, i, upCol)
+            CreateLine(lo, 5 + i, dnCol)
+            if greenCandle
+                CreateLabel(hi, i, upCol, i, 0)
+                CreateLabel(lo, 5 + i, dnCol, i, 1)
+            else
+                CreateLabel(hi, i, upCol, i, 2)
+                CreateLabel(lo, 5 + i, dnCol, i, 3)
+        else
+            line.delete(matrix.get(lines, 0, i))
+            line.delete(matrix.get(lines, 0, 5 + i))
+            label.delete(matrix.get(labels, 0, i))
+            label.delete(matrix.get(labels, 0, 5 + i))
+
+    if fill
+        for i = 0 to 8
+            get  = matrix.get(lines, 0, i)
+            get1 = matrix.get(lines, 0, i + 1)
+            col  = i > 4 ? color.new(dnCol, 80) : i == 4 ? color.new(color.gray, 100) : color.new(upCol, 80)
+            filler := linefill.new(get, get1, color=col)
+            linefill.delete(filler[1])
+else
+    for i = 0 to 9
+        line.delete(matrix.get(lines, 0, i))
+        label.delete(matrix.get(labels, 0, i))
+    linefill.delete(filler)
+
+// --- Plots ---
+plot(useOrb15m ? orbHigh : na, "1st 15m High (Top)", color=color.new(color.teal, 0), style=plot.style_linebr, linewidth=2)
+plot(useOrb15m ? orbLow  : na, "1st 15m Low (Bottom)", color=color.new(color.maroon, 0), style=plot.style_linebr, linewidth=2)
+plot(vwapVal, "VWAP", color=color.new(color.orange, 0), linewidth=2)
+plot(ema9Val, "EMA 9", color=color.new(color.blue, 0), linewidth=1)
+
+plotshape(buySignal,  title="Buy Signal",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(sellSignal, title="Sell Signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),   size=size.tiny)
